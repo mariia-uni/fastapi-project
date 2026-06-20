@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Summary</title>
+</head>
+<body>
+    <h1>YouTube video information</h1>
+
+    {% if video_url %}
+        <p>Video URL: {{ video_url }}</p>
+        <p>Video ID: {{ video_id }}</p>
+        <p>{{ summary }}</p>
+        <input type="button" value="Create Anki cards" onclick="
+            const video_id = '{{ video_id }}';
+            window.location.href = '/cards?video_id=' + encodeURIComponent(video_id)
+        "/>
+        <input type="button" value="Create a conspect" onclick="
+            window.location.href = '/conspect?video_id=' + encodeURIComponent(video_id)
+        "/>
+        <input type="button" value="Create a test" onclick="
+            window.location.href = '/test?video_id=' + encodeURIComponent(video_id)
+        "/>
+    {% else %}
+        <p>Link not found.</p>
+    {% endif %}
+</body>
+</html>

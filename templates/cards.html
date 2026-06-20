@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Anki Cards</title>
+</head>
+<body>
+    {% for card in cards %}
+        {% if card is mapping %}
+            <h1>{{ loop.index }}</h1>
+            <h1>{{ card.get("question") }}</h1>
+            <h2>{{ card.get("answer") }}</h2>
+        {% else %}
+            <p>Invalid card format: {{ card }}</p>
+        {% endif %}
+    {% endfor %}
+</body>
+</html>

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>
+            Home Page
+        </title>
+    </head>
+    <form id="videoUrl">
+        <label for="video_url">Video url:</label>
+        <input type="text" id="video_url" size="50" required>
+        <input type="button" value="Submit request" onclick="
+            const video_url = document.getElementById('video_url').value;
+            window.location.href = '/summary?video_url=' + encodeURIComponent(video_url)
+        "/>
+    </form>
+</html>
