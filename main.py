@@ -4,7 +4,7 @@ from groq import Groq
 from dotenv import dotenv_values, load_dotenv
 import os
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.exceptions import HTTPException
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 from groq import APIStatusError
@@ -38,17 +38,63 @@ def home(request: Request):
     )
 
 @app.get("/summary", response_class=HTMLResponse)
-def get_summary(request: Request, video_url: str):
+def get_summary(request: Request, video_url: str, format: str = None):
     try:
             video_id = video_url.replace("https://www.youtube.com/watch?v=", "")
+
+            # Ensure table and columns exist
+            cursor.execute("create table if not exists videos (video_id TEXT PRIMARY KEY, transcript TEXT, summary TEXT, cards TEXT, tests TEXT, conspect TEXT)")
+            cursor.execute("PRAGMA table_info(videos)")
+            existing_cols = [r[1] for r in cursor.fetchall()]
+            if 'tests' not in existing_cols:
+                cursor.execute("ALTER TABLE videos ADD COLUMN tests TEXT")
+            if 'conspect' not in existing_cols:
+                cursor.execute("ALTER TABLE videos ADD COLUMN conspect TEXT")
+
+            # Check if video already exists in DB
+            cursor.execute("select * from videos where video_id=:video_id", {"video_id": video_id})
+            video_data = cursor.fetchone()
+
+            # If video exists and user requested a specific format, show existing content if present
+            if video_data and format:
+                # columns: 0:id,1:transcript,2:summary,3:cards,4:tests,5:conspect
+                if format.lower() in ("summary",):
+                    if video_data[2]:
+                        transcript = video_data[1]
+                        summary = video_data[2]
+                        return templates.TemplateResponse(request, "summary.html", {"video_url": video_url, "video_id": video_id, "transcript": transcript, "summary": summary})
+                if format.lower() in ("conspect", "conspect.html"):
+                    if len(video_data) > 5 and video_data[5]:
+                        return templates.TemplateResponse(request, "conspect.html", {"conspect": video_data[5]})
+                    # else redirect to conspect generator which will create and save it
+                    return RedirectResponse(url=f"/conspect?video_id={video_id}")
+                if format.lower() in ("cards", "flashcards"):
+                    if video_data[3]:
+                        try:
+                            cards = json.loads(video_data[3])
+                        except Exception:
+                            cards = None
+                        if cards:
+                            return templates.TemplateResponse(request, "cards.html", {"cards": cards}, status_code=status.HTTP_200_OK)
+                    return RedirectResponse(url=f"/cards?video_id={video_id}")
+                if format.lower() in ("tests", "test"):
+                    if len(video_data) > 4 and video_data[4]:
+                        try:
+                            tests = json.loads(video_data[4])
+                        except Exception:
+                            tests = None
+                        if tests:
+                            return templates.TemplateResponse(request, "test.html", {"test": tests}, status_code=200)
+                    return RedirectResponse(url=f"/test?video_id={video_id}")
+
+            # If video not in DB, fetch transcript and generate summary (existing behavior)
             transcript = []
             fetched_text = ytt_api.fetch(video_id, languages=['en', 'uk'])
             for snippet in fetched_text:
                 transcript.append(snippet.text)
             transcript = " ".join(transcript)
-            cursor.execute("create table if not exists videos (video_id TEXT PRIMARY KEY, transcript TEXT, summary TEXT, cards TEXT)")
-            cursor.execute("select * from videos where video_id=:video_id", {"video_id": video_id})
-            if not cursor.fetchone():
+
+            if not video_data:
                 chat_completion = client.chat.completions.create(
                     messages=[
                         {
@@ -63,11 +109,11 @@ def get_summary(request: Request, video_url: str):
                     model="llama-3.1-8b-instant",
                 )
                 summary = chat_completion.choices[0].message.content
-                cursor.execute("insert into videos values (?, ?, ?, ?)", (video_id, transcript, summary, None))
+                cursor.execute("insert into videos values (?, ?, ?, ?, ?, ?)", (video_id, transcript, summary, None, None, None))
                 connection.commit()
             else:
-                cursor.execute("select * from videos where video_id=:video_id", {"video_id": video_id})
-                summary = cursor.fetchone()[2]
+                # video exists but user didn't request a specific format; return existing summary
+                summary = video_data[2]
             return templates.TemplateResponse(
                 request,
                 "summary.html",
@@ -180,16 +226,23 @@ def get_cards(request: Request, video_id: str):
         )
 @app.get("/conspect", response_class=HTMLResponse)
 def get_conspect(request: Request, video_id: str):
-    # Дістаємо збережений транскрипт з бази даних
-    cursor.execute("select transcript from videos where video_id=:video_id", {"video_id": video_id})
+    # Try to fetch saved conspect and transcript from DB
+    cursor.execute("select conspect, transcript from videos where video_id=:video_id", {"video_id": video_id})
     result = cursor.fetchone()
-    
+
     if not result:
         raise HTTPException(status_code=404, detail="Транскрипт не знайдено. Спочатку згенеруйте Summary.")
-    
-    transcript = result[0]
-    
-    # Просимо Groq згенерувати конспект
+
+    conspect_saved, transcript = result[0], result[1]
+
+    if conspect_saved:
+        return templates.TemplateResponse(
+            request,
+            "conspect.html",
+            {"conspect": conspect_saved},
+        )
+
+    # Generate conspect and save to DB
     chat_completion = client.chat.completions.create(
         messages=[
             {
@@ -207,7 +260,13 @@ def get_conspect(request: Request, video_id: str):
         model="llama-3.1-8b-instant",
     )
     conspect_html = chat_completion.choices[0].message.content
-    
+
+    try:
+        cursor.execute("update videos set conspect=:conspect where video_id=:video_id", {"conspect": conspect_html, "video_id": video_id})
+        connection.commit()
+    except Exception as e:
+        print(f"Помилка збереження конспекту: {e}")
+
     return templates.TemplateResponse(
         request,
         "conspect.html",
@@ -217,15 +276,31 @@ def get_conspect(request: Request, video_id: str):
 @app.get("/test")
 def get_test(request: Request, video_id: str):
     try:
-        cursor.execute("select transcript from videos where video_id=:video_id", {"video_id": video_id})
-        result = cursor.fetchone()
-        
-        if not result:
+        # Check if we already have tests saved for this video
+        cursor.execute("select * from videos where video_id=:video_id", {"video_id": video_id})
+        video_data = cursor.fetchone()
+
+        if not video_data:
             return templates.TemplateResponse(request, "error.html", {"status_code": 404, "message": "Транскрипт не знайдено. Спочатку згенеруйте Summary."}, status_code=404)
-            
-        transcript = result[0]
-        
-        # Просимо Groq згенерувати тест
+
+        # If tests already exist in DB, return them
+        if len(video_data) > 4 and video_data[4]:
+            try:
+                saved_test = json.loads(video_data[4])
+            except Exception:
+                saved_test = None
+
+            if saved_test:
+                return templates.TemplateResponse(
+                    request,
+                    "test.html",
+                    {"test": saved_test},
+                    status_code=200,
+                )
+
+        # Otherwise generate tests from transcript and save
+        transcript = video_data[1]
+
         chat_completion = client.chat.completions.create(
             messages=[
                 {
@@ -235,37 +310,44 @@ def get_test(request: Request, video_id: str):
                 {
                     "role": "user",
                     "content": f"""Analyze the transcript and create exactly 5 multiple choice questions.
-                    
+
                     CRITICAL RULES:
                     1. Output ONLY a raw JSON array.
                     2. Do not forget commas between objects.
                     3. Format must be exactly: [{{"question": "Q?", "options": ["A", "B", "C", "D"], "answer": "The exact correct option string"}}]
-                    
+
                     Transcript: {transcript}""",
                 },
             ],
             model="llama-3.1-8b-instant",
         )
         raw_content = chat_completion.choices[0].message.content
-        
-        # Використовуємо регулярні вирази, щоб витягнути тільки чистий код (як ми робили для карток)
+
+        # Extract JSON array from model output
         import re
         match = re.search(r'\[.*\]', raw_content, re.DOTALL)
         if match:
             cleaned_content = match.group(0)
         else:
             cleaned_content = raw_content
-            
+
         try:
             test_data = json.loads(cleaned_content)
         except json.JSONDecodeError:
             return templates.TemplateResponse(request, "error.html", {"status_code": 422, "message": "ШІ припустився помилки у форматуванні тесту. Будь ласка, поверніться назад і спробуйте ще раз."}, status_code=422)
-        
+
+        # Save generated test to DB
+        try:
+            cursor.execute("update videos set tests=:tests where video_id=:video_id", {"tests": json.dumps(test_data), "video_id": video_id})
+            connection.commit()
+        except Exception as e:
+            print(f"Помилка збереження тесту: {e}")
+
         return templates.TemplateResponse(
             request,
             "test.html",
             {"test": test_data},
-            status_code=200
+            status_code=200,
         )
     except Exception as e:
         print(f"Помилка генерації тесту: {e}")

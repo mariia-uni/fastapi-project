@@ -105,11 +105,39 @@
             const textSpan = btnElement.querySelector('span');
             const spinner = btnElement.querySelector('.spinner');
             
+            // store original text to restore later (if not already)
+            if (!textSpan.dataset.orig) textSpan.dataset.orig = textSpan.innerText;
             textSpan.innerText = "Генеруємо...";
             spinner.classList.remove('hidden');
 
             window.location.href = url;
         }
+
+        // Reset buttons: enable them, hide spinners, restore original labels
+        function resetButtons() {
+            const allBtns = document.querySelectorAll('button');
+            allBtns.forEach(b => {
+                b.disabled = false;
+                b.classList.remove('opacity-60', 'cursor-not-allowed');
+                const spinner = b.querySelector('.spinner');
+                if (spinner) spinner.classList.add('hidden');
+                const textSpan = b.querySelector('span');
+                if (textSpan && textSpan.dataset.orig) {
+                    textSpan.innerText = textSpan.dataset.orig;
+                }
+            });
+        }
+
+        // On initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            resetButtons();
+        });
+
+        // Also handle bfcache / back-forward navigation
+        window.addEventListener('pageshow', (event) => {
+            // pageshow fires on normal load and when navigating back/forward
+            resetButtons();
+        });
     </script>
 </body>
 </html>
